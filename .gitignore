@@ -1,0 +1,47 @@
+# Binaries
+/bin/
+/dist/
+/tmp/
+workaholic
+workaholic-server
+workaholic-cli
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go
+vendor/
+coverage.out
+coverage.html
+*.coverprofile
+
+# SQLite (local incident store)
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Secrets and local env
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+kubeconfig
+kubeconfig.*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
