@@ -76,6 +76,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.http.Shutdown(ctx)
 }
 
+// Handler exposes the mux for tests.
+func (s *Server) Handler() http.Handler {
+	return s.http.Handler
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -107,7 +112,7 @@ func writeDomainError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, domain.ErrUnauthorized), errors.Is(err, domain.ErrApproverDenied), errors.Is(err, domain.ErrSignatureInvalid):
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
-	case errors.Is(err, domain.ErrInvalidStatus), errors.Is(err, domain.ErrAlreadyTerminal), errors.Is(err, domain.ErrEmptyActionPlan):
+	case errors.Is(err, domain.ErrInvalidStatus), errors.Is(err, domain.ErrAlreadyTerminal), errors.Is(err, domain.ErrEmptyActionPlan), errors.Is(err, domain.ErrVerificationFailed):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	default:
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

@@ -35,30 +35,68 @@ func (e PlanExecutor) Execute(ctx context.Context, plan *domain.ActionPlan) (str
 }
 
 func (e PlanExecutor) runStep(ctx context.Context, step domain.ActionStep) (string, error) {
+	ns := argString(step.Arguments, "namespace")
+	name := argString(step.Arguments, "name")
 	switch step.Tool {
 	case domain.ToolPatchHPAMaxReplicas:
-		if e.K8s == nil {
-			return "", fmt.Errorf("%w: k8s remediator not configured", domain.ErrUnknownTool)
-		}
-		view, err := e.K8s.PatchHPAMaxReplicas(ctx, argString(step.Arguments, "namespace"), argString(step.Arguments, "name"), argInt32(step.Arguments, "max_replicas"))
+		k8s, err := e.k8sOrErr()
 		if err != nil {
 			return "", err
 		}
-		b, err := json.Marshal(view)
-		return string(b), err
+		view, err := k8s.PatchHPAMaxReplicas(ctx, ns, name, argInt32(step.Arguments, "max_replicas"))
+		return marshalView(view, err)
+	case domain.ToolRestartRollout:
+		k8s, err := e.k8sOrErr()
+		if err != nil {
+			return "", err
+		}
+		view, err := k8s.RestartRollout(ctx, ns, name)
+		return marshalView(view, err)
+	case domain.ToolRollbackDeployment:
+		k8s, err := e.k8sOrErr()
+		if err != nil {
+			return "", err
+		}
+		view, err := k8s.RollbackDeployment(ctx, ns, name)
+		return marshalView(view, err)
+	case domain.ToolScaleDeployment:
+		k8s, err := e.k8sOrErr()
+		if err != nil {
+			return "", err
+		}
+		view, err := k8s.ScaleDeployment(ctx, ns, name, argInt32(step.Arguments, "replicas"))
+		return marshalView(view, err)
+	case domain.ToolDeleteCrashLoopPod:
+		k8s, err := e.k8sOrErr()
+		if err != nil {
+			return "", err
+		}
+		view, err := k8s.DeleteCrashLoopPod(ctx, ns, name)
+		return marshalView(view, err)
 	case domain.ToolUpdateASGDesired:
 		if e.AWS == nil {
 			return "", fmt.Errorf("%w: aws remediator not configured", domain.ErrUnknownTool)
 		}
-		view, err := e.AWS.UpdateASGDesiredCapacity(ctx, argString(step.Arguments, "name"), argInt32(step.Arguments, "desired_capacity"))
-		if err != nil {
-			return "", err
-		}
-		b, err := json.Marshal(view)
-		return string(b), err
+		view, err := e.AWS.UpdateASGDesiredCapacity(ctx, name, argInt32(step.Arguments, "desired_capacity"))
+		return marshalView(view, err)
 	default:
 		return "", fmt.Errorf("%w: %s", domain.ErrUnknownTool, step.Tool)
 	}
+}
+
+func (e PlanExecutor) k8sOrErr() (ports.K8sRemediator, error) {
+	if e.K8s == nil {
+		return nil, fmt.Errorf("%w: k8s remediator not configured", domain.ErrUnknownTool)
+	}
+	return e.K8s, nil
+}
+
+func marshalView(view any, err error) (string, error) {
+	if err != nil {
+		return "", err
+	}
+	b, mErr := json.Marshal(view)
+	return string(b), mErr
 }
 
 func argString(args map[string]any, key string) string {
@@ -92,6 +130,7 @@ type IncidentService struct {
 	msg      ports.Messaging
 	tickets  ports.Ticketing
 	exec     PlanExecutor
+	verifier ports.Verifier
 	log      *slog.Logger
 	now      func() time.Time
 	newID    func() string
@@ -104,6 +143,7 @@ func NewIncidentService(
 	msg ports.Messaging,
 	tickets ports.Ticketing,
 	exec PlanExecutor,
+	verifier ports.Verifier,
 	log *slog.Logger,
 ) *IncidentService {
 	if log == nil {
@@ -116,6 +156,7 @@ func NewIncidentService(
 		msg:      msg,
 		tickets:  tickets,
 		exec:     exec,
+		verifier: verifier,
 		log:      log,
 		now:      func() time.Time { return time.Now().UTC() },
 		newID:    newULIDLike,
@@ -156,7 +197,9 @@ func (s *IncidentService) HandleAlert(ctx context.Context, alert ports.Alert) (*
 		if s.msg != nil {
 			_ = s.msg.NotifyFailed(ctx, inc, err.Error())
 		}
-		return inc, err
+		// Incident is persisted; Grafana must not retry the webhook.
+		s.log.ErrorContext(ctx, "alert handling finished failed", "incident", inc.ID, "err", err)
+		return inc, nil
 	}
 	return inc, nil
 }
@@ -214,23 +257,7 @@ func (s *IncidentService) autoRemediate(ctx context.Context, inc *domain.Inciden
 	if err := s.repo.Update(ctx, inc); err != nil {
 		return err
 	}
-	outcome, err := s.exec.Execute(ctx, inc.ActionPlan)
-	if err != nil {
-		inc.Status = domain.StatusFailed
-		inc.UpdatedAt = s.now()
-		_ = s.repo.Update(ctx, inc)
-		return domain.Wrap(err, "auto-remediate")
-	}
-	inc.Status = domain.StatusResolved
-	inc.UpdatedAt = s.now()
-	if err := s.repo.Update(ctx, inc); err != nil {
-		return err
-	}
-	s.audit(ctx, inc.ID, "system", "auto_remediated", outcome)
-	if s.msg != nil {
-		_ = s.msg.NotifyAutoRemediated(ctx, inc, outcome)
-	}
-	return nil
+	return s.settleExecution(ctx, inc, "system", "auto_remediated", true)
 }
 
 // ExecuteApprovedPlan is used by ApprovalService after authorization.
@@ -252,27 +279,56 @@ func (s *IncidentService) ExecuteApprovedPlan(ctx context.Context, incidentID, a
 	}
 	s.audit(ctx, inc.ID, actor, "approved", "executing action plan")
 
+	if err := s.settleExecution(ctx, inc, actor, "resolved", false); err != nil {
+		return inc, domain.Wrap(err, "execute approved plan")
+	}
+	return inc, nil
+}
+
+func (s *IncidentService) settleExecution(ctx context.Context, inc *domain.Incident, actor, successAction string, auto bool) error {
 	outcome, err := s.exec.Execute(ctx, inc.ActionPlan)
 	if err != nil {
-		inc.Status = domain.StatusFailed
-		inc.UpdatedAt = s.now()
-		_ = s.repo.Update(ctx, inc)
-		s.audit(ctx, inc.ID, actor, "execution_failed", err.Error())
-		if s.msg != nil {
-			_ = s.msg.NotifyFailed(ctx, inc, err.Error())
+		return s.failExecution(ctx, inc, actor, "execution_failed", err)
+	}
+	if s.verifier != nil {
+		res, vErr := s.verifier.Verify(ctx, inc)
+		if vErr != nil {
+			return s.failExecution(ctx, inc, actor, "verification_failed", fmt.Errorf("%w: %v", domain.ErrVerificationFailed, vErr))
 		}
-		return inc, domain.Wrap(err, "execute approved plan")
+		if res == nil || !res.OK {
+			summary := "verification failed"
+			if res != nil && res.Summary != "" {
+				summary = res.Summary
+			}
+			return s.failExecution(ctx, inc, actor, "verification_failed", fmt.Errorf("%w: %s", domain.ErrVerificationFailed, summary))
+		}
+		s.audit(ctx, inc.ID, actor, "verified", res.Summary)
 	}
 	inc.Status = domain.StatusResolved
 	inc.UpdatedAt = s.now()
 	if err := s.repo.Update(ctx, inc); err != nil {
-		return inc, err
+		return err
 	}
-	s.audit(ctx, inc.ID, actor, "resolved", outcome)
+	s.audit(ctx, inc.ID, actor, successAction, outcome)
 	if s.msg != nil {
-		_ = s.msg.NotifyResolved(ctx, inc, outcome)
+		if auto {
+			_ = s.msg.NotifyAutoRemediated(ctx, inc, outcome)
+		} else {
+			_ = s.msg.NotifyResolved(ctx, inc, outcome)
+		}
 	}
-	return inc, nil
+	return nil
+}
+
+func (s *IncidentService) failExecution(ctx context.Context, inc *domain.Incident, actor, action string, err error) error {
+	inc.Status = domain.StatusFailed
+	inc.UpdatedAt = s.now()
+	_ = s.repo.Update(ctx, inc)
+	s.audit(ctx, inc.ID, actor, action, err.Error())
+	if s.msg != nil {
+		_ = s.msg.NotifyFailed(ctx, inc, err.Error())
+	}
+	return err
 }
 
 func (s *IncidentService) Reject(ctx context.Context, incidentID, actor, reason string) (*domain.Incident, error) {
