@@ -131,6 +131,7 @@ type IncidentService struct {
 	tickets  ports.Ticketing
 	exec     PlanExecutor
 	verifier ports.Verifier
+	changes  ports.ChangeCorrelator
 	log      *slog.Logger
 	now      func() time.Time
 	newID    func() string
@@ -144,6 +145,7 @@ func NewIncidentService(
 	tickets ports.Ticketing,
 	exec PlanExecutor,
 	verifier ports.Verifier,
+	changes ports.ChangeCorrelator,
 	log *slog.Logger,
 ) *IncidentService {
 	if log == nil {
@@ -157,6 +159,7 @@ func NewIncidentService(
 		tickets:  tickets,
 		exec:     exec,
 		verifier: verifier,
+		changes:  changes,
 		log:      log,
 		now:      func() time.Time { return time.Now().UTC() },
 		newID:    newULIDLike,
@@ -218,6 +221,7 @@ func (s *IncidentService) investigateAndDispatch(ctx context.Context, inc *domai
 		Incident:  inc,
 		Runbooks:  contextBooks,
 		Telemetry: inc.RawPayload,
+		Changes:   s.correlate(ctx, inc.Labels),
 	})
 	if err != nil {
 		return domain.Wrap(err, "investigate")
@@ -370,6 +374,7 @@ func (s *IncidentService) FollowUp(ctx context.Context, incidentID, actor, quest
 		Runbooks:  books,
 		Telemetry: inc.RawPayload,
 		FollowUp:  question,
+		Changes:   s.correlate(ctx, inc.Labels),
 	})
 	if err != nil {
 		return inc, domain.Wrap(err, "follow-up investigate")
@@ -382,6 +387,18 @@ func (s *IncidentService) FollowUp(ctx context.Context, incidentID, actor, quest
 		}
 	}
 	return inc, nil
+}
+
+func (s *IncidentService) correlate(ctx context.Context, labels map[string]string) *ports.ChangeContext {
+	if s.changes == nil {
+		return nil
+	}
+	ch, err := s.changes.Correlate(ctx, labels)
+	if err != nil {
+		s.log.WarnContext(ctx, "change correlation failed", "err", err)
+		return nil
+	}
+	return ch
 }
 
 func (s *IncidentService) contextRunbooks(ctx context.Context, labels map[string]string) ([]domain.Runbook, error) {

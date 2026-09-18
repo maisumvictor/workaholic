@@ -60,6 +60,7 @@ type K8sInvestigator interface {
 	GetPodLogs(ctx context.Context, namespace, name, container string, tailLines int64) (string, error)
 	GetHPA(ctx context.Context, namespace, name string) (*HPAView, error)
 	ListHPAs(ctx context.Context, namespace string) ([]HPAView, error)
+	ListReplicaSets(ctx context.Context, namespace, deployment string) ([]ReplicaSetView, error)
 }
 
 // K8sRemediator is the strictly scoped write port. Implementations MUST
