@@ -11,8 +11,10 @@ import (
 )
 
 const (
-	ActionApprove = "approve_incident"
-	ActionReject  = "reject_incident"
+	ActionApprove          = "approve_incident"
+	ActionReject           = "reject_incident"
+	ActionAskInvestigator  = "ask_investigator"
+	ActionFollowUpQuestion = "followup_question"
 )
 
 // Client implements ports.Messaging via Slack Block Kit.
@@ -39,6 +41,7 @@ func (Noop) NotifyFailed(context.Context, *domain.Incident, string) error   { re
 func (Noop) NotifyAutoRemediated(context.Context, *domain.Incident, string) error {
 	return nil
 }
+func (Noop) ReplyFollowUp(context.Context, *domain.Incident, string, string) error { return nil }
 
 func (c *Client) RequestApproval(ctx context.Context, incident *domain.Incident, plan *domain.ActionPlan) error {
 	blocks := approvalBlocks(incident, plan)
@@ -62,6 +65,10 @@ func (c *Client) NotifyFailed(ctx context.Context, incident *domain.Incident, er
 
 func (c *Client) NotifyAutoRemediated(ctx context.Context, incident *domain.Incident, outcome string) error {
 	return c.post(ctx, fmt.Sprintf(":robot_face: *Auto-remediated* `%s` — %s\n%s", incident.ID, incident.Title, outcome))
+}
+
+func (c *Client) ReplyFollowUp(ctx context.Context, incident *domain.Incident, question, answer string) error {
+	return c.post(ctx, fmt.Sprintf(":mag: *Follow-up* `%s`\n*Q:* %s\n*A:* %s", incident.ID, question, answer))
 }
 
 func (c *Client) post(ctx context.Context, text string) error {
@@ -102,7 +109,13 @@ func approvalBlocks(incident *domain.Incident, plan *domain.ActionPlan) []slack.
 	approve.Style = slack.StylePrimary
 	reject := slack.NewButtonBlockElement(ActionReject, incident.ID, slack.NewTextBlockObject(slack.PlainTextType, "Reject", false, false))
 	reject.Style = slack.StyleDanger
-	actions := slack.NewActionBlock("incident_actions", approve, reject)
+	ask := slack.NewButtonBlockElement(ActionAskInvestigator, incident.ID, slack.NewTextBlockObject(slack.PlainTextType, "Ask investigator", false, false))
+	actions := slack.NewActionBlock("incident_actions", approve, reject, ask)
 
-	return []slack.Block{header, body, actions}
+	placeholder := slack.NewTextBlockObject(slack.PlainTextType, "Ask a follow-up (read-only)", false, false)
+	input := slack.NewPlainTextInputBlockElement(placeholder, ActionFollowUpQuestion)
+	label := slack.NewTextBlockObject(slack.PlainTextType, "Follow-up question", false, false)
+	inputBlock := slack.NewInputBlock("followup_input", label, nil, input)
+
+	return []slack.Block{header, body, inputBlock, actions}
 }

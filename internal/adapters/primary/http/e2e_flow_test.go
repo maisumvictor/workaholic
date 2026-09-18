@@ -34,6 +34,7 @@ type harness struct {
 	server *httptest.Server
 	k8s    *testkit.FakeK8s
 	msg    *testkit.FakeMessaging
+	llm    *testkit.ScriptedInvestigator
 }
 
 func newHarness(t *testing.T, plan *domain.ActionPlan, books []domain.Runbook) *harness {
@@ -58,7 +59,7 @@ func newHarness(t *testing.T, plan *domain.ActionPlan, books []domain.Runbook) *
 	}, incidents, approvals, nil)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return &harness{t: t, server: ts, k8s: k8s, msg: msg}
+	return &harness{t: t, server: ts, k8s: k8s, msg: msg, llm: llm}
 }
 
 func (h *harness) postGrafana(body string) (int, map[string]any) {
@@ -111,7 +112,17 @@ func (h *harness) approveAPI(id, actor string) (int, map[string]any) {
 
 func (h *harness) slackApprove(id, actor string) int {
 	h.t.Helper()
-	payload := fmt.Sprintf(`{"type":"block_actions","user":{"id":%q},"actions":[{"action_id":"approve_incident","block_id":"actions","type":"button","value":%q}]}`, actor, id)
+	return h.slackInteractive(fmt.Sprintf(`{"type":"block_actions","user":{"id":%q},"actions":[{"action_id":"approve_incident","block_id":"actions","type":"button","value":%q}]}`, actor, id), true)
+}
+
+func (h *harness) slackAsk(id, actor, question string, sign bool) int {
+	h.t.Helper()
+	payload := fmt.Sprintf(`{"type":"block_actions","user":{"id":%q},"state":{"values":{"followup_input":{"followup_question":{"type":"plain_text_input","value":%s}}}},"actions":[{"action_id":"ask_investigator","block_id":"followup_actions","type":"button","value":%q}]}`, actor, mustJSON(question), id)
+	return h.slackInteractive(payload, sign)
+}
+
+func (h *harness) slackInteractive(payload string, sign bool) int {
+	h.t.Helper()
 	form := url.Values{"payload": {payload}}.Encode()
 	ts := strconv.FormatInt(time.Now().Unix(), 10)
 	req, err := http.NewRequest(http.MethodPost, h.server.URL+"/webhooks/slack/interactive", strings.NewReader(form))
@@ -120,14 +131,26 @@ func (h *harness) slackApprove(id, actor string) int {
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-Slack-Request-Timestamp", ts)
-	req.Header.Set("X-Slack-Signature", slackSig(testSlackSecret, ts, []byte(form)))
+	if sign {
+		req.Header.Set("X-Slack-Signature", slackSig(testSlackSecret, ts, []byte(form)))
+	} else {
+		req.Header.Set("X-Slack-Signature", "v0=deadbeef")
+	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		h.t.Fatalf("slack approve: %v", err)
+		h.t.Fatalf("slack interactive: %v", err)
 	}
 	defer res.Body.Close()
 	_, _ = io.Copy(io.Discard, res.Body)
 	return res.StatusCode
+}
+
+func mustJSON(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
 }
 
 func firstIncidentID(t *testing.T, body map[string]any) string {
@@ -419,5 +442,89 @@ func TestE2E_NewRemediatorToolsRequireApprovalThenExecute(t *testing.T) {
 				t.Fatalf("remediator calls %v want %s", got, tc.tool)
 			}
 		})
+	}
+}
+
+func TestE2E_SlackFollowUpInvestigatesWithoutRemediator(t *testing.T) {
+	plan := &domain.ActionPlan{
+		Summary:    "restart api rollout",
+		RiskLevel:  domain.RiskRequiresApproval,
+		Confidence: 0.9,
+		RunbookID:  "crashloop",
+		Steps: []domain.ActionStep{{
+			Tool:      domain.ToolRestartRollout,
+			Arguments: map[string]any{"namespace": "prod", "name": "api"},
+			Reason:    "crashloop",
+		}},
+	}
+	h := newHarness(t, plan, []domain.Runbook{crashRunbook()})
+	h.k8s.Deployments["prod/api"] = readyDeploy("prod", "api", 2)
+
+	_, body := h.postGrafana(grafanaFiring("KubePodCrashLooping", "prod", "api"))
+	id := firstIncidentID(t, body)
+	if h.llm.Calls != 1 {
+		t.Fatalf("initial investigate calls=%d", h.llm.Calls)
+	}
+
+	h.llm.Plan = &domain.ActionPlan{
+		Summary:    "3/3 pods Ready; crashloop was a stale replica",
+		RiskLevel:  domain.RiskAutoRemediate,
+		Confidence: 0.99,
+		RunbookID:  "crashloop",
+		Steps: []domain.ActionStep{{
+			Tool:      domain.ToolRestartRollout,
+			Arguments: map[string]any{"namespace": "prod", "name": "api"},
+			Reason:    "model still wants a write",
+		}},
+	}
+
+	if st := h.slackAsk(id, testApprover, "are the pods still crashlooping?", true); st != http.StatusOK {
+		t.Fatalf("follow-up status %d", st)
+	}
+	inc := h.getIncident(id)
+	if inc["status"] != string(domain.StatusAwaitingApproval) {
+		t.Fatalf("follow-up must not execute the plan, status=%v", inc["status"])
+	}
+	if h.llm.Calls != 2 {
+		t.Fatalf("follow-up should call investigator again, calls=%d", h.llm.Calls)
+	}
+	if !strings.Contains(h.llm.LastQuestion(), "are the pods still crashlooping?") {
+		t.Fatalf("investigator did not see the question: %q", h.llm.LastQuestion())
+	}
+	if got := h.k8s.ToolsCalled(); len(got) != 0 {
+		t.Fatalf("remediator must not run from Slack follow-up: %v", got)
+	}
+	if !auditHas(h.getAudit(id), "followup") {
+		t.Fatalf("audit missing followup: %v", h.getAudit(id))
+	}
+	if len(h.msg.FollowUps) != 1 || h.msg.FollowUps[0].Answer == "" {
+		t.Fatalf("expected Slack thread reply, got %+v", h.msg.FollowUps)
+	}
+}
+
+func TestE2E_SlackFollowUpRejectsBadSignatureAndEmptyQuestion(t *testing.T) {
+	plan := &domain.ActionPlan{
+		Summary:    "restart",
+		RiskLevel:  domain.RiskRequiresApproval,
+		Confidence: 0.9,
+		RunbookID:  "crashloop",
+		Steps:      []domain.ActionStep{{Tool: domain.ToolRestartRollout, Arguments: map[string]any{"namespace": "prod", "name": "api"}}},
+	}
+	h := newHarness(t, plan, []domain.Runbook{crashRunbook()})
+	h.k8s.Deployments["prod/api"] = readyDeploy("prod", "api", 2)
+	_, body := h.postGrafana(grafanaFiring("KubePodCrashLooping", "prod", "api"))
+	id := firstIncidentID(t, body)
+
+	if st := h.slackAsk(id, testApprover, "what broke?", false); st != http.StatusUnauthorized {
+		t.Fatalf("unsigned follow-up status %d", st)
+	}
+	if st := h.slackAsk(id, testApprover, "   ", true); st != http.StatusBadRequest {
+		t.Fatalf("empty question status %d", st)
+	}
+	if h.llm.Calls != 1 {
+		t.Fatalf("bad follow-ups must not call investigator, calls=%d", h.llm.Calls)
+	}
+	if st := h.slackAsk(id, "U-not-allowed", "what broke?", true); st != http.StatusForbidden {
+		t.Fatalf("non-approver follow-up status %d", st)
 	}
 }

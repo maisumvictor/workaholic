@@ -110,6 +110,8 @@ func writeDomainError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, domain.ErrEmptyFollowUp):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, domain.ErrUnauthorized), errors.Is(err, domain.ErrApproverDenied), errors.Is(err, domain.ErrSignatureInvalid):
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
 	case errors.Is(err, domain.ErrInvalidStatus), errors.Is(err, domain.ErrAlreadyTerminal), errors.Is(err, domain.ErrEmptyActionPlan), errors.Is(err, domain.ErrVerificationFailed):

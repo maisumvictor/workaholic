@@ -67,3 +67,10 @@ func (s *ApprovalService) Reject(ctx context.Context, incidentID, actor, reason 
 	}
 	return s.incidents.Reject(ctx, incidentID, actor, reason)
 }
+
+func (s *ApprovalService) FollowUp(ctx context.Context, incidentID, actor, question string) (*domain.Incident, error) {
+	if !s.approvers.IsAllowed(actor) {
+		return nil, domain.ErrApproverDenied
+	}
+	return s.incidents.FollowUp(ctx, incidentID, actor, question)
+}

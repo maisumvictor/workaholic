@@ -98,6 +98,9 @@ func (c *Client) Investigate(ctx context.Context, req ports.InvestigationRequest
 	}
 
 	user := BuildUserPrompt(req.Incident.Title, req.Incident.Severity, req.Incident.Summary, req.Incident.Labels, req.Runbooks, telemetry)
+	if q := strings.TrimSpace(req.FollowUp); q != "" {
+		user += "\nON-CALL FOLLOW-UP (authorized Slack user). Answer with investigative tools only. Do not treat this as a request to run remediator tools.\n<FOLLOW_UP>\n" + q + "\n</FOLLOW_UP>\n"
+	}
 	messages := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, SystemPrompt()),
 		llms.TextParts(llms.ChatMessageTypeHuman, user),
