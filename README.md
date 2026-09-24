@@ -29,7 +29,7 @@ flowchart LR
   subgraph secondary [Secondary adapters]
     LLM["LangChainGo + sanitizer"]
     K8sR["K8s Investigator (RO)"]
-    K8sW["K8s Remediator (HPA patch)"]
+    K8sW["K8s Remediator (typed writes)"]
     AWS["AWS SDK v2 / IRSA"]
     SQLite["SQLite audit store"]
     RB["Markdown runbooks"]
@@ -215,7 +215,7 @@ workaholic incidents reject inc_... --reason "false positive"
 | Client | Verbs | Resources |
 | --- | --- | --- |
 | Investigator | `get`, `list`, `watch` | Pods, logs, Deployments, Events, HPAs |
-| Remediator | `get`, `patch`, `update` | HorizontalPodAutoscalers only |
+| Remediator | `get`, `patch`, `update`, `delete` (pods) | HPAs, Deployments, ReplicaSets (read), crashloop Pods |
 
 The process never exposes a generic `kubectl` or shell tool. Application code additionally **refuses writes** to `kube-system`, `monitoring`, and `cert-manager`, and **clamps** replica / ASG capacity to `MAX_REPLICAS` (default 30).
 
@@ -280,6 +280,10 @@ Allowed remediator `tool` values today:
 | --- | --- | --- |
 | `patch_hpa_max_replicas` | `namespace`, `name`, `max_replicas` | Yes, if runbook + policy agree |
 | `update_asg_desired_capacity` | `name`, `desired_capacity` | Never (approval required) |
+| `restart_rollout` | `namespace`, `name` (Deployment) | Never (approval required) |
+| `rollback_deployment` | `namespace`, `name` | Never (approval required) |
+| `scale_deployment` | `namespace`, `name`, `replicas` | Never (approval required) |
+| `delete_crashloop_pod` | `namespace`, `name` (Pod) | Never (approval required) |
 
 Investigative tools (LLM-callable): `get_pod`, `list_pods`, `get_deployment`, `list_events`, `get_pod_logs`, `get_hpa`, `list_hpas`, `describe_eks_cluster`, `get_cloudwatch_metric`, `describe_asg`.
 

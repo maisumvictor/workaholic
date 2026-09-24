@@ -83,6 +83,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	incidents := services.NewIncidentService(
 		repo, runbooks, llm, msg, nil,
 		services.PlanExecutor{K8s: k8sClients.Remediator, AWS: awsRem},
+		k8sadapter.NewHealthVerifier(k8sClients.Investigator),
 		log,
 	)
 	approvals := services.NewApprovalService(incidents, services.NewStaticApprovers(cfg.ApproverIDs), log)

@@ -28,4 +28,15 @@ func TestActionPlanCanAutoRemediate(t *testing.T) {
 	if lowConf.CanAutoRemediate() {
 		t.Fatal("low confidence must require approval")
 	}
+
+	for _, tool := range []string{ToolRestartRollout, ToolRollbackDeployment, ToolScaleDeployment, ToolDeleteCrashLoopPod} {
+		plan := &ActionPlan{
+			RiskLevel:  RiskAutoRemediate,
+			Confidence: 0.99,
+			Steps:      []ActionStep{{Tool: tool}},
+		}
+		if plan.CanAutoRemediate() {
+			t.Fatalf("%s must require approval even when the model claims auto_remediate", tool)
+		}
+	}
 }

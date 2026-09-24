@@ -21,7 +21,8 @@ type FactoryConfig struct {
 
 	// Optional split kubeconfigs (MODE=vm). When empty, both clients share
 	// the default kubeconfig / in-cluster config. RBAC still splits duties:
-	// InvestigatorClient never writes; RemediatorClient only patches HPAs.
+	// InvestigatorClient never writes; RemediatorClient only runs typed
+	// tools (HPA patch, rollout restart/rollback, scale, crashloop delete).
 	InvestigatorKubeconfig string
 	RemediatorKubeconfig   string
 

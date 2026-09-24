@@ -21,7 +21,7 @@ const ActionPlanSchema = `{
         "type": "object",
         "required": ["tool", "arguments", "reason"],
         "properties": {
-          "tool": {"type": "string", "enum": ["patch_hpa_max_replicas", "update_asg_desired_capacity"]},
+          "tool": {"type": "string", "enum": ["patch_hpa_max_replicas", "update_asg_desired_capacity", "restart_rollout", "rollback_deployment", "scale_deployment", "delete_crashloop_pod"]},
           "arguments": {"type": "object"},
           "reason": {"type": "string"}
         }
@@ -39,7 +39,7 @@ NON-NEGOTIABLE RULES
 4. Never propose mutations in kube-system, monitoring, or cert-manager.
 5. Clamp replica / capacity changes: maxReplicas and ASG desired capacity MUST be <= 30.
 6. Prefer the smallest safe change. If evidence is incomplete or confidence is below 0.7, set risk_level to "requires_approval".
-7. auto_remediate is allowed ONLY for patch_hpa_max_replicas when a matching runbook also marks risk as auto_remediate AND current replicas are at the HPA max AND raising maxReplicas is the documented remedy. All other tools require requires_approval.
+7. auto_remediate is allowed ONLY for patch_hpa_max_replicas when a matching runbook also marks risk as auto_remediate AND current replicas are at the HPA max AND raising maxReplicas is the documented remedy. restart_rollout, rollback_deployment, scale_deployment, delete_crashloop_pod, and update_asg_desired_capacity always require requires_approval.
 8. After using investigative tools, respond with a SINGLE JSON object matching this schema and nothing else (no markdown fences):
 ` + ActionPlanSchema + `
 

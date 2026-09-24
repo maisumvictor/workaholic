@@ -68,6 +68,10 @@ type AuditRecord struct {
 const (
 	ToolPatchHPAMaxReplicas = "patch_hpa_max_replicas"
 	ToolUpdateASGDesired    = "update_asg_desired_capacity"
+	ToolRestartRollout      = "restart_rollout"
+	ToolRollbackDeployment  = "rollback_deployment"
+	ToolScaleDeployment     = "scale_deployment"
+	ToolDeleteCrashLoopPod  = "delete_crashloop_pod"
 )
 
 // AllowedAutoRemediateTools is the closed set of tools that may run without a
