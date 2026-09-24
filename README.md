@@ -13,7 +13,7 @@ It is a production-oriented Go service built as **Hexagonal Architecture** (port
 ```mermaid
 flowchart LR
   Grafana["Grafana / Alertmanager"] -->|POST /webhooks/grafana| HTTP
-  SlackUI["Slack buttons"] -->|HMAC verified| HTTP
+  SlackUI["Slack buttons + follow-up"] -->|HMAC verified| HTTP
   CLI["workaholic CLI"] -->|Bearer API| HTTP
 
   subgraph primary [Primary adapters]
@@ -29,7 +29,7 @@ flowchart LR
   subgraph secondary [Secondary adapters]
     LLM["LangChainGo + sanitizer"]
     K8sR["K8s Investigator (RO)"]
-    K8sW["K8s Remediator (HPA patch)"]
+    K8sW["K8s Remediator (typed writes)"]
     AWS["AWS SDK v2 / IRSA"]
     SQLite["SQLite audit store"]
     RB["Markdown runbooks"]
@@ -159,6 +159,10 @@ Workaholic accepts the unified Grafana alerting JSON (`alerts[]` with `labels` /
 3. Install the app, copy the bot token and signing secret.
 4. Put authorized Slack **user IDs** in `SLACK_APPROVER_IDS`.
 
+Incoming webhooks cannot receive button clicks (outbound-only). The bot + Interactivity URL is required.
+
+The approval card includes **Approve**, **Reject**, a follow-up text input, and **Ask investigator**. Follow-up re-runs read-only investigation for that incident and posts the answer; it never calls remediator tools, even if the model proposes a write. Same HMAC path and approver whitelist as Approve/Reject.
+
 ### CLI
 
 ```bash
@@ -197,6 +201,10 @@ workaholic incidents reject inc_... --reason "false positive"
 | `SLACK_CHANNEL` | | Approval destination |
 | `SLACK_APPROVER_IDS` | empty (deny all) | Comma-separated Slack user IDs |
 | `WORKAHOLIC_API_TOKEN` | unset (open) | Bearer for `/api/v1/*` |
+| `GITHUB_TOKEN` | unset | Optional GitHub compare (read-only) |
+| `GITHUB_API_URL` | `https://api.github.com` | GitHub API base |
+| `ARGOCD_SERVER` | unset | Optional Argo CD API base (read-only) |
+| `ARGOCD_TOKEN` | unset | Argo CD bearer token |
 
 ---
 
@@ -214,8 +222,8 @@ workaholic incidents reject inc_... --reason "false positive"
 
 | Client | Verbs | Resources |
 | --- | --- | --- |
-| Investigator | `get`, `list`, `watch` | Pods, logs, Deployments, Events, HPAs |
-| Remediator | `get`, `patch`, `update` | HorizontalPodAutoscalers only |
+| Investigator | `get`, `list`, `watch` | Pods, logs, Deployments, ReplicaSets, Events, HPAs |
+| Remediator | `get`, `patch`, `update`, `delete` (pods) | HPAs, Deployments, ReplicaSets (read), crashloop Pods |
 
 The process never exposes a generic `kubectl` or shell tool. Application code additionally **refuses writes** to `kube-system`, `monitoring`, and `cert-manager`, and **clamps** replica / ASG capacity to `MAX_REPLICAS` (default 30).
 
@@ -236,6 +244,7 @@ The model only receives **read-only** tools during investigation. Remediator too
 - `X-Slack-Signature` HMAC-SHA256 over `v0:{timestamp}:{raw body}`, 5-minute skew window.
 - Approver whitelist (`SLACK_APPROVER_IDS` / CLI `--actor`). Empty whitelist **denies** everyone.
 - No unsigned interactive path.
+- Follow-up questions reuse that HMAC path. Chat can only invoke investigator tools; remediator writes stay on Approve / CLI.
 
 ### Residual risks
 
@@ -280,8 +289,12 @@ Allowed remediator `tool` values today:
 | --- | --- | --- |
 | `patch_hpa_max_replicas` | `namespace`, `name`, `max_replicas` | Yes, if runbook + policy agree |
 | `update_asg_desired_capacity` | `name`, `desired_capacity` | Never (approval required) |
+| `restart_rollout` | `namespace`, `name` (Deployment) | Never (approval required) |
+| `rollback_deployment` | `namespace`, `name` | Never (approval required) |
+| `scale_deployment` | `namespace`, `name`, `replicas` | Never (approval required) |
+| `delete_crashloop_pod` | `namespace`, `name` (Pod) | Never (approval required) |
 
-Investigative tools (LLM-callable): `get_pod`, `list_pods`, `get_deployment`, `list_events`, `get_pod_logs`, `get_hpa`, `list_hpas`, `describe_eks_cluster`, `get_cloudwatch_metric`, `describe_asg`.
+Investigative tools (LLM-callable): `get_pod`, `list_pods`, `get_deployment`, `list_replicaset_revisions`, `list_events`, `get_pod_logs`, `get_hpa`, `list_hpas`, `describe_eks_cluster`, `get_cloudwatch_metric`, `describe_asg`, `github_compare`, `get_argo_application`.
 
 There is **no** `exec`, `bash`, or `kubectl` tool. Adding one is a security regression.
 

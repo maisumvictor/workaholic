@@ -60,10 +60,17 @@ type K8sInvestigator interface {
 	GetPodLogs(ctx context.Context, namespace, name, container string, tailLines int64) (string, error)
 	GetHPA(ctx context.Context, namespace, name string) (*HPAView, error)
 	ListHPAs(ctx context.Context, namespace string) ([]HPAView, error)
+	ListReplicaSets(ctx context.Context, namespace, deployment string) ([]ReplicaSetView, error)
 }
 
 // K8sRemediator is the strictly scoped write port. Implementations MUST
 // refuse mutations in protected namespaces and clamp replica targets.
+// New tools default to human approval in the core service; this port is
+// still the only path that may mutate the cluster.
 type K8sRemediator interface {
 	PatchHPAMaxReplicas(ctx context.Context, namespace, name string, maxReplicas int32) (*HPAView, error)
+	RestartRollout(ctx context.Context, namespace, name string) (*DeploymentView, error)
+	RollbackDeployment(ctx context.Context, namespace, name string) (*DeploymentView, error)
+	ScaleDeployment(ctx context.Context, namespace, name string, replicas int32) (*DeploymentView, error)
+	DeleteCrashLoopPod(ctx context.Context, namespace, name string) (*PodView, error)
 }

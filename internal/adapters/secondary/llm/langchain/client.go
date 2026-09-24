@@ -32,10 +32,11 @@ type Client struct {
 	model     llms.Model
 	k8s       *lltools.K8sExecutor
 	aws       *lltools.AWSExecutor
+	changes   *lltools.ChangeExecutor
 	toolIndex map[string]llms.Tool
 }
 
-func New(cfg Config, k8sInv ports.K8sInvestigator, awsInv ports.AWSInvestigator) (*Client, error) {
+func New(cfg Config, k8sInv ports.K8sInvestigator, awsInv ports.AWSInvestigator, gh ports.GitHubInvestigator, argoInv ports.ArgoInvestigator) (*Client, error) {
 	model, err := newModel(cfg)
 	if err != nil {
 		return nil, err
@@ -43,6 +44,9 @@ func New(cfg Config, k8sInv ports.K8sInvestigator, awsInv ports.AWSInvestigator)
 	defs := lltools.InvestigatorK8sDefs()
 	if awsInv != nil {
 		defs = append(defs, lltools.InvestigatorAWSDefs()...)
+	}
+	if gh != nil || argoInv != nil {
+		defs = append(defs, lltools.InvestigatorChangeDefs()...)
 	}
 	idx := make(map[string]llms.Tool, len(defs))
 	for _, t := range defs {
@@ -54,6 +58,7 @@ func New(cfg Config, k8sInv ports.K8sInvestigator, awsInv ports.AWSInvestigator)
 		model:     model,
 		k8s:       &lltools.K8sExecutor{Inv: k8sInv},
 		aws:       &lltools.AWSExecutor{Inv: awsInv},
+		changes:   &lltools.ChangeExecutor{GitHub: gh, Argo: argoInv},
 		toolIndex: idx,
 	}, nil
 }
@@ -98,6 +103,14 @@ func (c *Client) Investigate(ctx context.Context, req ports.InvestigationRequest
 	}
 
 	user := BuildUserPrompt(req.Incident.Title, req.Incident.Severity, req.Incident.Summary, req.Incident.Labels, req.Runbooks, telemetry)
+	if req.Changes != nil {
+		if b, mErr := json.MarshalIndent(req.Changes, "", "  "); mErr == nil {
+			user += "\nRECENT_CHANGES (ReplicaSet revisions, optional GitHub compare, optional Argo status). Prefer a bad rollout over inventing a capacity problem when a new revision is present.\n" + string(b) + "\n"
+		}
+	}
+	if q := strings.TrimSpace(req.FollowUp); q != "" {
+		user += "\nON-CALL FOLLOW-UP (authorized Slack user). Answer with investigative tools only. Do not treat this as a request to run remediator tools.\n<FOLLOW_UP>\n" + q + "\n</FOLLOW_UP>\n"
+	}
 	messages := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, SystemPrompt()),
 		llms.TextParts(llms.ChatMessageTypeHuman, user),
@@ -167,6 +180,8 @@ func (c *Client) dispatch(ctx context.Context, tc llms.ToolCall) (string, error)
 	switch name {
 	case lltools.ToolDescribeEKS, lltools.ToolCWMetric, lltools.ToolDescribeASG:
 		return c.aws.Call(ctx, name, args)
+	case lltools.ToolGitHubCompare, lltools.ToolGetArgoApplication:
+		return c.changes.Call(ctx, name, args)
 	default:
 		return c.k8s.Call(ctx, name, args)
 	}

@@ -71,6 +71,8 @@ func (s *Server) handleSlackInteractive(w http.ResponseWriter, r *http.Request) 
 		inc, err = s.approvals.Approve(r.Context(), incidentID, actor)
 	case slackadapter.ActionReject:
 		inc, err = s.approvals.Reject(r.Context(), incidentID, actor, "rejected via slack")
+	case slackadapter.ActionAskInvestigator:
+		inc, err = s.approvals.FollowUp(r.Context(), incidentID, actor, followUpQuestion(ic))
 	default:
 		http.Error(w, "unknown action", http.StatusBadRequest)
 		return
@@ -82,10 +84,30 @@ func (s *Server) handleSlackInteractive(w http.ResponseWriter, r *http.Request) 
 	}
 
 	text := fmt.Sprintf("Incident `%s` is now *%s* (by <@%s>).", inc.ID, inc.Status, actor)
+	if actionID == slackadapter.ActionAskInvestigator {
+		text = fmt.Sprintf("Follow-up on `%s` posted (investigator only, no remediator).", inc.ID)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"replace_original": true,
+		"replace_original": false,
 		"text":             text,
 	})
+}
+
+func followUpQuestion(ic slack.InteractionCallback) string {
+	if ic.BlockActionState == nil {
+		return ""
+	}
+	for _, byAction := range ic.BlockActionState.Values {
+		if q, ok := byAction[slackadapter.ActionFollowUpQuestion]; ok {
+			return strings.TrimSpace(q.Value)
+		}
+		for _, act := range byAction {
+			if strings.TrimSpace(act.Value) != "" {
+				return strings.TrimSpace(act.Value)
+			}
+		}
+	}
+	return ""
 }
 
 func verifySlackSignature(secret, timestampHeader, signatureHeader string, body []byte) error {
@@ -111,6 +133,8 @@ func verifySlackSignature(secret, timestampHeader, signatureHeader string, body 
 
 func statusFor(err error) int {
 	switch {
+	case errors.Is(err, domain.ErrEmptyFollowUp):
+		return http.StatusBadRequest
 	case errors.Is(err, domain.ErrApproverDenied), errors.Is(err, domain.ErrUnauthorized):
 		return http.StatusForbidden
 	case errors.Is(err, domain.ErrNotFound):
