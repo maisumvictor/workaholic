@@ -13,7 +13,7 @@ It is a production-oriented Go service built as **Hexagonal Architecture** (port
 ```mermaid
 flowchart LR
   Grafana["Grafana / Alertmanager"] -->|POST /webhooks/grafana| HTTP
-  SlackUI["Slack buttons"] -->|HMAC verified| HTTP
+  SlackUI["Slack buttons + follow-up"] -->|HMAC verified| HTTP
   CLI["workaholic CLI"] -->|Bearer API| HTTP
 
   subgraph primary [Primary adapters]
@@ -159,6 +159,10 @@ Workaholic accepts the unified Grafana alerting JSON (`alerts[]` with `labels` /
 3. Install the app, copy the bot token and signing secret.
 4. Put authorized Slack **user IDs** in `SLACK_APPROVER_IDS`.
 
+Incoming webhooks cannot receive button clicks (outbound-only). The bot + Interactivity URL is required.
+
+The approval card includes **Approve**, **Reject**, a follow-up text input, and **Ask investigator**. Follow-up re-runs read-only investigation for that incident and posts the answer; it never calls remediator tools, even if the model proposes a write. Same HMAC path and approver whitelist as Approve/Reject.
+
 ### CLI
 
 ```bash
@@ -236,6 +240,7 @@ The model only receives **read-only** tools during investigation. Remediator too
 - `X-Slack-Signature` HMAC-SHA256 over `v0:{timestamp}:{raw body}`, 5-minute skew window.
 - Approver whitelist (`SLACK_APPROVER_IDS` / CLI `--actor`). Empty whitelist **denies** everyone.
 - No unsigned interactive path.
+- Follow-up questions reuse that HMAC path. Chat can only invoke investigator tools; remediator writes stay on Approve / CLI.
 
 ### Residual risks
 

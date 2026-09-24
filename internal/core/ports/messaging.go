@@ -12,4 +12,5 @@ type Messaging interface {
 	NotifyResolved(ctx context.Context, incident *domain.Incident, outcome string) error
 	NotifyFailed(ctx context.Context, incident *domain.Incident, errMsg string) error
 	NotifyAutoRemediated(ctx context.Context, incident *domain.Incident, outcome string) error
+	ReplyFollowUp(ctx context.Context, incident *domain.Incident, question, answer string) error
 }

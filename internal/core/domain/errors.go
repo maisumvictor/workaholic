@@ -17,6 +17,7 @@ var (
 	ErrSignatureInvalid     = fmt.Errorf("request signature is invalid")
 	ErrApproverDenied       = fmt.Errorf("caller is not an authorized approver")
 	ErrVerificationFailed   = fmt.Errorf("post-remediation verification failed")
+	ErrEmptyFollowUp        = fmt.Errorf("follow-up question is empty")
 )
 
 // ValidationError captures a field-level domain validation failure.

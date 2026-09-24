@@ -209,13 +209,9 @@ func (s *IncidentService) investigateAndDispatch(ctx context.Context, inc *domai
 	if err != nil {
 		return domain.Wrap(err, "match runbooks")
 	}
-	contextBooks := matched
-	if len(matched) == 0 {
-		all, listErr := s.runbooks.List(ctx)
-		if listErr != nil {
-			return domain.Wrap(listErr, "list runbooks")
-		}
-		contextBooks = all
+	contextBooks, err := s.contextRunbooks(ctx, inc.Labels)
+	if err != nil {
+		return err
 	}
 
 	plan, err := s.llm.Investigate(ctx, ports.InvestigationRequest{
@@ -352,6 +348,55 @@ func (s *IncidentService) Reject(ctx context.Context, incidentID, actor, reason 
 		_ = s.msg.NotifyFailed(ctx, inc, "rejected by "+actor+": "+reason)
 	}
 	return inc, nil
+}
+
+// FollowUp re-runs the investigator for an on-call Slack question. It never
+// invokes the remediator, even if the model proposes write tools.
+func (s *IncidentService) FollowUp(ctx context.Context, incidentID, actor, question string) (*domain.Incident, error) {
+	question = strings.TrimSpace(question)
+	if question == "" {
+		return nil, domain.ErrEmptyFollowUp
+	}
+	inc, err := s.repo.Get(ctx, incidentID)
+	if err != nil {
+		return nil, err
+	}
+	books, err := s.contextRunbooks(ctx, inc.Labels)
+	if err != nil {
+		return inc, err
+	}
+	plan, err := s.llm.Investigate(ctx, ports.InvestigationRequest{
+		Incident:  inc,
+		Runbooks:  books,
+		Telemetry: inc.RawPayload,
+		FollowUp:  question,
+	})
+	if err != nil {
+		return inc, domain.Wrap(err, "follow-up investigate")
+	}
+	answer := firstNonEmpty(plan.Summary, plan.Rationale, "(no investigator summary)")
+	s.audit(ctx, inc.ID, actor, "followup", question+": "+answer)
+	if s.msg != nil {
+		if msgErr := s.msg.ReplyFollowUp(ctx, inc, question, answer); msgErr != nil {
+			s.log.ErrorContext(ctx, "follow-up slack reply failed", "err", msgErr, "incident", inc.ID)
+		}
+	}
+	return inc, nil
+}
+
+func (s *IncidentService) contextRunbooks(ctx context.Context, labels map[string]string) ([]domain.Runbook, error) {
+	matched, err := s.runbooks.Match(ctx, labels)
+	if err != nil {
+		return nil, domain.Wrap(err, "match runbooks")
+	}
+	if len(matched) > 0 {
+		return matched, nil
+	}
+	all, listErr := s.runbooks.List(ctx)
+	if listErr != nil {
+		return nil, domain.Wrap(listErr, "list runbooks")
+	}
+	return all, nil
 }
 
 func (s *IncidentService) Get(ctx context.Context, id string) (*domain.Incident, error) {

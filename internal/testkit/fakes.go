@@ -148,10 +148,12 @@ type ScriptedInvestigator struct {
 	Plan  *domain.ActionPlan
 	Err   error
 	Calls int
+	Last  ports.InvestigationRequest
 }
 
-func (s *ScriptedInvestigator) Investigate(context.Context, ports.InvestigationRequest) (*domain.ActionPlan, error) {
+func (s *ScriptedInvestigator) Investigate(_ context.Context, req ports.InvestigationRequest) (*domain.ActionPlan, error) {
 	s.Calls++
+	s.Last = req
 	if s.Err != nil {
 		return nil, s.Err
 	}
@@ -163,13 +165,27 @@ func (s *ScriptedInvestigator) Investigate(context.Context, ports.InvestigationR
 	return &cp, nil
 }
 
+func (s *ScriptedInvestigator) LastQuestion() string {
+	if s.Last.FollowUp != "" {
+		return s.Last.FollowUp
+	}
+	return s.Last.Telemetry
+}
+
 // FakeMessaging records Messaging port calls.
+type FollowUpNote struct {
+	IncidentID string
+	Question   string
+	Answer     string
+}
+
 type FakeMessaging struct {
 	mu        sync.Mutex
 	Approvals []string
 	Resolved  []string
 	Failed    []string
 	Auto      []string
+	FollowUps []FollowUpNote
 }
 
 func (m *FakeMessaging) RequestApproval(_ context.Context, incident *domain.Incident, _ *domain.ActionPlan) error {
@@ -194,6 +210,12 @@ func (m *FakeMessaging) NotifyAutoRemediated(_ context.Context, incident *domain
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.Auto = append(m.Auto, incident.ID)
+	return nil
+}
+func (m *FakeMessaging) ReplyFollowUp(_ context.Context, incident *domain.Incident, question, answer string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.FollowUps = append(m.FollowUps, FollowUpNote{IncidentID: incident.ID, Question: question, Answer: answer})
 	return nil
 }
 
