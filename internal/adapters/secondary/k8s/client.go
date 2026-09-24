@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -174,6 +176,74 @@ func (c *InvestigatorClient) ListHPAs(ctx context.Context, namespace string) ([]
 		out = append(out, hpaView(h))
 	}
 	return out, nil
+}
+
+func (c *InvestigatorClient) ListReplicaSets(ctx context.Context, namespace, deployment string) ([]ports.ReplicaSetView, error) {
+	list, err := c.cs.AppsV1().ReplicaSets(namespace).List(ctx, metav1.ListOptions{Limit: maxListItems})
+	if err != nil {
+		return nil, domain.Wrap(err, "list replicasets")
+	}
+	out := make([]ports.ReplicaSetView, 0)
+	for _, rs := range list.Items {
+		if !replicaSetOwnedByDeployment(rs, deployment) {
+			continue
+		}
+		out = append(out, replicaSetView(rs, deployment))
+	}
+	sortReplicaSets(out)
+	if len(out) > 10 {
+		out = out[:10]
+	}
+	return out, nil
+}
+
+func replicaSetOwnedByDeployment(rs appsv1.ReplicaSet, deployment string) bool {
+	if deployment == "" {
+		return false
+	}
+	for _, o := range rs.OwnerReferences {
+		if o.Kind == "Deployment" && o.Name == deployment && (o.Controller == nil || *o.Controller) {
+			return true
+		}
+	}
+	return false
+}
+
+func replicaSetView(rs appsv1.ReplicaSet, deployment string) ports.ReplicaSetView {
+	var replicas int32
+	if rs.Spec.Replicas != nil {
+		replicas = *rs.Spec.Replicas
+	}
+	images := make([]string, 0, len(rs.Spec.Template.Spec.Containers))
+	for _, c := range rs.Spec.Template.Spec.Containers {
+		if c.Image != "" {
+			images = append(images, c.Image)
+		}
+	}
+	return ports.ReplicaSetView{
+		Namespace:     rs.Namespace,
+		Name:          rs.Name,
+		Deployment:    deployment,
+		Revision:      rs.Annotations["deployment.kubernetes.io/revision"],
+		Replicas:      replicas,
+		ReadyReplicas: rs.Status.ReadyReplicas,
+		Images:        images,
+		CreatedAt:     rs.CreationTimestamp.UTC().Format(time.RFC3339),
+	}
+}
+
+func sortReplicaSets(list []ports.ReplicaSetView) {
+	sort.SliceStable(list, func(i, j int) bool {
+		ri, errI := strconv.Atoi(list[i].Revision)
+		rj, errJ := strconv.Atoi(list[j].Revision)
+		if errI == nil && errJ == nil {
+			return ri > rj
+		}
+		if list[i].CreatedAt != list[j].CreatedAt {
+			return list[i].CreatedAt > list[j].CreatedAt
+		}
+		return list[i].Name > list[j].Name
+	})
 }
 
 // RemediatorClient is a write-scoped Kubernetes adapter.

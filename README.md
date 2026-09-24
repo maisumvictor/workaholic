@@ -201,6 +201,10 @@ workaholic incidents reject inc_... --reason "false positive"
 | `SLACK_CHANNEL` | | Approval destination |
 | `SLACK_APPROVER_IDS` | empty (deny all) | Comma-separated Slack user IDs |
 | `WORKAHOLIC_API_TOKEN` | unset (open) | Bearer for `/api/v1/*` |
+| `GITHUB_TOKEN` | unset | Optional GitHub compare (read-only) |
+| `GITHUB_API_URL` | `https://api.github.com` | GitHub API base |
+| `ARGOCD_SERVER` | unset | Optional Argo CD API base (read-only) |
+| `ARGOCD_TOKEN` | unset | Argo CD bearer token |
 
 ---
 
@@ -218,7 +222,7 @@ workaholic incidents reject inc_... --reason "false positive"
 
 | Client | Verbs | Resources |
 | --- | --- | --- |
-| Investigator | `get`, `list`, `watch` | Pods, logs, Deployments, Events, HPAs |
+| Investigator | `get`, `list`, `watch` | Pods, logs, Deployments, ReplicaSets, Events, HPAs |
 | Remediator | `get`, `patch`, `update`, `delete` (pods) | HPAs, Deployments, ReplicaSets (read), crashloop Pods |
 
 The process never exposes a generic `kubectl` or shell tool. Application code additionally **refuses writes** to `kube-system`, `monitoring`, and `cert-manager`, and **clamps** replica / ASG capacity to `MAX_REPLICAS` (default 30).
@@ -290,7 +294,7 @@ Allowed remediator `tool` values today:
 | `scale_deployment` | `namespace`, `name`, `replicas` | Never (approval required) |
 | `delete_crashloop_pod` | `namespace`, `name` (Pod) | Never (approval required) |
 
-Investigative tools (LLM-callable): `get_pod`, `list_pods`, `get_deployment`, `list_events`, `get_pod_logs`, `get_hpa`, `list_hpas`, `describe_eks_cluster`, `get_cloudwatch_metric`, `describe_asg`.
+Investigative tools (LLM-callable): `get_pod`, `list_pods`, `get_deployment`, `list_replicaset_revisions`, `list_events`, `get_pod_logs`, `get_hpa`, `list_hpas`, `describe_eks_cluster`, `get_cloudwatch_metric`, `describe_asg`, `github_compare`, `get_argo_application`.
 
 There is **no** `exec`, `bash`, or `kubectl` tool. Adding one is a security regression.
 

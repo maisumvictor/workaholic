@@ -10,8 +10,11 @@ import (
 	"time"
 
 	primaryhttp "github.com/maisumvictor/Workaholic/internal/adapters/primary/http"
+	argoadapter "github.com/maisumvictor/Workaholic/internal/adapters/secondary/argo"
 	awsadapter "github.com/maisumvictor/Workaholic/internal/adapters/secondary/aws"
+	"github.com/maisumvictor/Workaholic/internal/adapters/secondary/changes"
 	runbooksfs "github.com/maisumvictor/Workaholic/internal/adapters/secondary/fs/runbooks"
+	githubadapter "github.com/maisumvictor/Workaholic/internal/adapters/secondary/github"
 	k8sadapter "github.com/maisumvictor/Workaholic/internal/adapters/secondary/k8s"
 	langchain "github.com/maisumvictor/Workaholic/internal/adapters/secondary/llm/langchain"
 	slackadapter "github.com/maisumvictor/Workaholic/internal/adapters/secondary/slack"
@@ -64,11 +67,20 @@ func run(ctx context.Context, log *slog.Logger) error {
 		awsRem = awsClient
 	}
 
+	var ghInv ports.GitHubInvestigator
+	if cfg.GitHubToken != "" {
+		ghInv = githubadapter.New(nil, cfg.GitHubAPIURL, cfg.GitHubToken)
+	}
+	var argoInv ports.ArgoInvestigator
+	if cfg.ArgoServer != "" {
+		argoInv = argoadapter.New(nil, cfg.ArgoServer, cfg.ArgoToken)
+	}
+
 	llm, err := langchain.New(langchain.Config{
 		Provider: cfg.LLMProvider,
 		Model:    cfg.LLMModel,
 		APIKey:   cfg.LLMAPIKey,
-	}, k8sClients.Investigator, awsInv)
+	}, k8sClients.Investigator, awsInv, ghInv, argoInv)
 	if err != nil {
 		return err
 	}
@@ -84,6 +96,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 		repo, runbooks, llm, msg, nil,
 		services.PlanExecutor{K8s: k8sClients.Remediator, AWS: awsRem},
 		k8sadapter.NewHealthVerifier(k8sClients.Investigator),
+		&changes.Correlator{K8s: k8sClients.Investigator, GitHub: ghInv, Argo: argoInv},
 		log,
 	)
 	approvals := services.NewApprovalService(incidents, services.NewStaticApprovers(cfg.ApproverIDs), log)
@@ -124,6 +137,10 @@ type config struct {
 	LLMModel           string
 	LLMAPIKey          string
 	AWSRegion          string
+	GitHubToken        string
+	GitHubAPIURL       string
+	ArgoServer         string
+	ArgoToken          string
 }
 
 func loadConfig() config {
@@ -147,6 +164,10 @@ func loadConfig() config {
 		LLMModel:           os.Getenv("LLM_MODEL"),
 		LLMAPIKey:          apiKey,
 		AWSRegion:          os.Getenv("AWS_REGION"),
+		GitHubToken:        os.Getenv("GITHUB_TOKEN"),
+		GitHubAPIURL:       env("GITHUB_API_URL", "https://api.github.com"),
+		ArgoServer:         os.Getenv("ARGOCD_SERVER"),
+		ArgoToken:          os.Getenv("ARGOCD_TOKEN"),
 	}
 }
 

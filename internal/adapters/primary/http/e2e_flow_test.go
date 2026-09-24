@@ -17,6 +17,9 @@ import (
 	"time"
 
 	primaryhttp "github.com/maisumvictor/Workaholic/internal/adapters/primary/http"
+	argoadapter "github.com/maisumvictor/Workaholic/internal/adapters/secondary/argo"
+	"github.com/maisumvictor/Workaholic/internal/adapters/secondary/changes"
+	githubadapter "github.com/maisumvictor/Workaholic/internal/adapters/secondary/github"
 	k8sadapter "github.com/maisumvictor/Workaholic/internal/adapters/secondary/k8s"
 	"github.com/maisumvictor/Workaholic/internal/core/domain"
 	"github.com/maisumvictor/Workaholic/internal/core/ports"
@@ -30,11 +33,12 @@ const (
 )
 
 type harness struct {
-	t      *testing.T
-	server *httptest.Server
-	k8s    *testkit.FakeK8s
-	msg    *testkit.FakeMessaging
-	llm    *testkit.ScriptedInvestigator
+	t       *testing.T
+	server  *httptest.Server
+	k8s     *testkit.FakeK8s
+	msg     *testkit.FakeMessaging
+	llm     *testkit.ScriptedInvestigator
+	changes *changes.Correlator
 }
 
 func newHarness(t *testing.T, plan *domain.ActionPlan, books []domain.Runbook) *harness {
@@ -42,6 +46,7 @@ func newHarness(t *testing.T, plan *domain.ActionPlan, books []domain.Runbook) *
 	k8s := testkit.NewFakeK8s()
 	llm := &testkit.ScriptedInvestigator{Plan: plan}
 	msg := &testkit.FakeMessaging{}
+	corr := &changes.Correlator{K8s: k8s}
 	incidents := services.NewIncidentService(
 		testkit.NewMemoryRepo(),
 		testkit.StaticRunbooks{Books: books},
@@ -50,6 +55,7 @@ func newHarness(t *testing.T, plan *domain.ActionPlan, books []domain.Runbook) *
 		nil,
 		services.PlanExecutor{K8s: k8s},
 		k8sadapter.NewHealthVerifier(k8s),
+		corr,
 		nil,
 	)
 	approvals := services.NewApprovalService(incidents, services.NewStaticApprovers([]string{testApprover}), nil)
@@ -59,7 +65,7 @@ func newHarness(t *testing.T, plan *domain.ActionPlan, books []domain.Runbook) *
 	}, incidents, approvals, nil)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return &harness{t: t, server: ts, k8s: k8s, msg: msg, llm: llm}
+	return &harness{t: t, server: ts, k8s: k8s, msg: msg, llm: llm, changes: corr}
 }
 
 func (h *harness) postGrafana(body string) (int, map[string]any) {
@@ -183,18 +189,26 @@ func slackSig(secret, ts string, body []byte) string {
 }
 
 func grafanaFiring(alertname, ns, name string) string {
+	return grafanaFiringLabels(alertname, ns, name, nil)
+}
+
+func grafanaFiringLabels(alertname, ns, name string, extra map[string]string) string {
+	labels := map[string]string{
+		"alertname":               alertname,
+		"namespace":               ns,
+		"horizontalpodautoscaler": name,
+		"severity":                "warning",
+	}
+	for k, v := range extra {
+		labels[k] = v
+	}
 	var buf bytes.Buffer
 	_ = json.NewEncoder(&buf).Encode(map[string]any{
 		"receiver": "workaholic",
 		"status":   "firing",
 		"alerts": []map[string]any{{
 			"status": "firing",
-			"labels": map[string]string{
-				"alertname":               alertname,
-				"namespace":               ns,
-				"horizontalpodautoscaler": name,
-				"severity":                "warning",
-			},
+			"labels": labels,
 			"annotations": map[string]string{
 				"summary":     alertname,
 				"description": "e2e fixture",
@@ -526,5 +540,70 @@ func TestE2E_SlackFollowUpRejectsBadSignatureAndEmptyQuestion(t *testing.T) {
 	}
 	if st := h.slackAsk(id, "U-not-allowed", "what broke?", true); st != http.StatusForbidden {
 		t.Fatalf("non-approver follow-up status %d", st)
+	}
+}
+
+func TestE2E_InvestigationSeesDeployPRArgoChanges(t *testing.T) {
+	plan := &domain.ActionPlan{
+		Summary:    "new image rolled out; not an HPA cap issue",
+		RiskLevel:  domain.RiskRequiresApproval,
+		Confidence: 0.8,
+		RunbookID:  "hpa-maxed",
+		Steps:      []domain.ActionStep{},
+	}
+	h := newHarness(t, plan, []domain.Runbook{hpaRunbook()})
+	testkit.SeedHPAAtMax(h.k8s, "prod", "api", 10)
+	testkit.SeedReplicaSets(h.k8s, "prod", "api", []ports.ReplicaSetView{
+		{Namespace: "prod", Name: "api-bbb", Deployment: "api", Revision: "12", Replicas: 10, ReadyReplicas: 10, Images: []string{"ghcr.io/acme/api:sha-new"}, CreatedAt: "2026-09-18T10:00:00Z"},
+		{Namespace: "prod", Name: "api-aaa", Deployment: "api", Revision: "11", Replicas: 0, ReadyReplicas: 0, Images: []string{"ghcr.io/acme/api:sha-old"}, CreatedAt: "2026-09-17T10:00:00Z"},
+	})
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/acme/api/compare/sha-old...sha-new" {
+			t.Errorf("github path %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"ahead","ahead_by":3,"behind_by":0,"html_url":"https://github.com/acme/api/compare/sha-old...sha-new","commits":[{"commit":{"message":"break prod"}}]}`))
+	}))
+	t.Cleanup(gh.Close)
+	argoSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/applications/api" {
+			t.Errorf("argo path %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"metadata":{"name":"api","namespace":"argocd"},"spec":{"source":{"repoURL":"https://github.com/acme/api","targetRevision":"main"}},"status":{"sync":{"status":"Synced","revision":"sha-new"},"health":{"status":"Degraded"}}}`))
+	}))
+	t.Cleanup(argoSrv.Close)
+	h.changes.GitHub = githubadapter.New(gh.Client(), gh.URL, "test-token")
+	h.changes.Argo = argoadapter.New(argoSrv.Client(), argoSrv.URL, "test-token")
+
+	_, body := h.postGrafana(grafanaFiringLabels("KubeHPAReplicasAtMax", "prod", "api", map[string]string{
+		"github_repo":          "acme/api",
+		"github_base":          "sha-old",
+		"github_head":          "sha-new",
+		"argocd_application":   "api",
+		"argocd_app_namespace": "argocd",
+	}))
+	_ = firstIncidentID(t, body)
+
+	ch := h.llm.Last.Changes
+	if ch == nil {
+		t.Fatal("investigator request missing change context")
+	}
+	if len(ch.ReplicaSets) < 2 {
+		t.Fatalf("want ReplicaSet revisions, got %+v", ch.ReplicaSets)
+	}
+	if ch.ReplicaSets[0].Revision != "12" || ch.ReplicaSets[0].Images[0] != "ghcr.io/acme/api:sha-new" {
+		t.Fatalf("current revision %+v", ch.ReplicaSets[0])
+	}
+	if ch.GitHub == nil || ch.GitHub.AheadBy != 3 || !strings.Contains(ch.GitHub.HTMLURL, "acme/api") {
+		t.Fatalf("github compare %+v", ch.GitHub)
+	}
+	if ch.Argo == nil || ch.Argo.HealthStatus != "Degraded" || ch.Argo.Revision != "sha-new" {
+		t.Fatalf("argo app %+v", ch.Argo)
+	}
+	if got := h.k8s.ToolsCalled(); len(got) != 0 {
+		t.Fatalf("change correlation must be read-only, remediator calls=%v", got)
 	}
 }

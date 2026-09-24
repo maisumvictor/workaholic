@@ -11,14 +11,15 @@ import (
 )
 
 const (
-	ToolGetPod        = "get_pod"
-	ToolListPods      = "list_pods"
-	ToolGetDeployment = "get_deployment"
-	ToolListEvents    = "list_events"
-	ToolGetPodLogs    = "get_pod_logs"
-	ToolGetHPA        = "get_hpa"
-	ToolListHPAs      = "list_hpas"
-	ToolPatchHPA      = "patch_hpa_max_replicas"
+	ToolGetPod          = "get_pod"
+	ToolListPods        = "list_pods"
+	ToolGetDeployment   = "get_deployment"
+	ToolListEvents      = "list_events"
+	ToolGetPodLogs      = "get_pod_logs"
+	ToolGetHPA          = "get_hpa"
+	ToolListHPAs        = "list_hpas"
+	ToolListReplicaSets = "list_replicaset_revisions"
+	ToolPatchHPA        = "patch_hpa_max_replicas"
 )
 
 // K8sExecutor dispatches strongly-typed Kubernetes tools. Investigative tools
@@ -89,6 +90,14 @@ func InvestigatorK8sDefs() []llms.Tool {
 				"namespace": map[string]any{"type": "string"},
 			},
 		}),
+		fn(ToolListReplicaSets, "List recent ReplicaSet revisions for a Deployment (rollout history, images). Read-only.", map[string]any{
+			"type":     "object",
+			"required": []string{"namespace", "deployment"},
+			"properties": map[string]any{
+				"namespace":  map[string]any{"type": "string"},
+				"deployment": map[string]any{"type": "string"},
+			},
+		}),
 	}
 }
 
@@ -123,6 +132,9 @@ func (e *K8sExecutor) Call(ctx context.Context, name, arguments string) (string,
 		return marshalTool(name, v, err)
 	case ToolListHPAs:
 		v, err := e.Inv.ListHPAs(ctx, str(args, "namespace"))
+		return marshalTool(name, v, err)
+	case ToolListReplicaSets:
+		v, err := e.Inv.ListReplicaSets(ctx, str(args, "namespace"), str(args, "deployment"))
 		return marshalTool(name, v, err)
 	case ToolPatchHPA:
 		if e.Rem == nil {

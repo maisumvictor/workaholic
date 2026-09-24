@@ -235,6 +235,7 @@ type FakeK8s struct {
 	Events      []ports.EventView
 	Protected   map[string]struct{}
 	MaxReplicas int32
+	ReplicaSets map[string][]ports.ReplicaSetView
 }
 
 func NewFakeK8s() *FakeK8s {
@@ -244,6 +245,7 @@ func NewFakeK8s() *FakeK8s {
 		Pods:        map[string]*ports.PodView{},
 		Protected:   map[string]struct{}{"kube-system": {}, "monitoring": {}, "cert-manager": {}},
 		MaxReplicas: 30,
+		ReplicaSets: map[string][]ports.ReplicaSetView{},
 	}
 }
 
@@ -318,6 +320,15 @@ func (f *FakeK8s) ListHPAs(_ context.Context, namespace string) ([]ports.HPAView
 			out = append(out, *h)
 		}
 	}
+	return out, nil
+}
+
+func (f *FakeK8s) ListReplicaSets(_ context.Context, namespace, deployment string) ([]ports.ReplicaSetView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	src := f.ReplicaSets[key(namespace, deployment)]
+	out := make([]ports.ReplicaSetView, len(src))
+	copy(out, src)
 	return out, nil
 }
 
@@ -457,6 +468,53 @@ func SeedHPAAtMax(k *FakeK8s, ns, name string, replicas int32) {
 	k.Pods[key(ns, name+"-0")] = &ports.PodView{
 		Namespace: ns, Name: name + "-0", Phase: "Running", Ready: "1/1",
 	}
+}
+
+// SeedReplicaSets stores rollout history for a Deployment, newest first.
+func SeedReplicaSets(k *FakeK8s, ns, deploy string, sets []ports.ReplicaSetView) {
+	cp := append([]ports.ReplicaSetView(nil), sets...)
+	k.ReplicaSets[key(ns, deploy)] = cp
+}
+
+// FakeGitHub is a scripted GitHubInvestigator.
+type FakeGitHub struct {
+	View *ports.GitHubCompareView
+	Err  error
+}
+
+func (f *FakeGitHub) Compare(_ context.Context, owner, repo, base, head string) (*ports.GitHubCompareView, error) {
+	if f.Err != nil {
+		return nil, f.Err
+	}
+	if f.View == nil {
+		return nil, domain.ErrNotFound
+	}
+	cp := *f.View
+	cp.Owner, cp.Repo, cp.Base, cp.Head = owner, repo, base, head
+	return &cp, nil
+}
+
+// FakeArgo is a scripted ArgoInvestigator.
+type FakeArgo struct {
+	View *ports.ArgoApplicationView
+	Err  error
+}
+
+func (f *FakeArgo) GetApplication(_ context.Context, namespace, name string) (*ports.ArgoApplicationView, error) {
+	if f.Err != nil {
+		return nil, f.Err
+	}
+	if f.View == nil {
+		return nil, domain.ErrNotFound
+	}
+	cp := *f.View
+	if cp.Name == "" {
+		cp.Name = name
+	}
+	if cp.Namespace == "" {
+		cp.Namespace = namespace
+	}
+	return &cp, nil
 }
 
 // Now is a stable clock for tests that need one.
