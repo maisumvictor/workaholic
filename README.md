@@ -1,5 +1,9 @@
 # Workaholic
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8.svg)](https://go.dev/)
+[![GitHub](https://img.shields.io/badge/GitHub-maisumvictor%2Fworkaholic-181717?logo=github&logoColor=white)](https://github.com/maisumvictor/workaholic)
+
 Autonomous **1st-level incident response** for Kubernetes and AWS.
 
 Workaholic receives monitoring alerts (Grafana / Alertmanager), inspects cluster and cloud context with an LLM, consults local Markdown runbooks, and either **auto-remediates low-risk changes** (for example raising an HPA `maxReplicas` cap) or **asks a human on Slack** before applying anything else.
